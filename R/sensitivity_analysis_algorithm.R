@@ -33,11 +33,11 @@
 #'p.A3 <- exp(lp.C)/(exp(lp.A)+exp(lp.B)+exp(lp.C))
 #'p.A <- matrix(c(p.A1,p.A2,p.A3),ncol = 3)
 #'A = NULL
-#'for (i in 1:sample_size) { # assign treatment
-#'  A[i] <- sample(c(1, 2, 3),
+#'for (m in 1:sample_size) { # assign treatment
+#'  A[m] <- sample(c(1, 2, 3),
 #'                 size = 1,
 #'                 replace = TRUE,
-#'                 prob = p.A[i, ])
+#'                 prob = p.A[m, ])
 #'}
 #'table(A)
 #'# set the binary outcome
@@ -64,9 +64,9 @@
 #'sample_gap <- 10
 #'sensitivity_analysis_result <- sensitivity_analysis(cbind(x1, x2), Yobs,
 #'A, alpha, n_p = 1, sensitivity_correction = TRUE)
-#'mean(sensitivity_analysis_result$ATE_23)
-#'mean(sensitivity_analysis_result$ATE_13)
-#'mean(sensitivity_analysis_result$ATE_12)}
+#'mean(sensitivity_analysis_result$ATE_12)
+#'mean(sensitivity_analysis_result$ATE_02)
+#'mean(sensitivity_analysis_result$ATE_01)}
 
 
 sensitivity_analysis = function(covariates, y, A, alpha, n_p, nposterior = 1000, sensitivity_correction = TRUE){
@@ -81,94 +81,61 @@ sensitivity_analysis = function(covariates, y, A, alpha, n_p, nposterior = 1000,
   if (!sensitivity_correction) {
     # fit binary bart
     bart_mod = BART::pbart(x.train = cbind(covariates, A),  y.train = y,  ndpost = nposterior, printevery = 10000)
-    for (j in 1:(A_unique_length)){
-      assign(paste0("predict_",j), pnorm(BART::pwbart(cbind(covariates, A = j), bart_mod$treedraws)))
-    }
-
-    for (i in 1:(A_unique_length-1)){
-      for (j in (i + 1):A_unique_length){
-        assign(paste0("ATE_",i,j), rowMeans(eval(parse(text =(paste0("predict_",i)))) - eval(parse(text =(paste0("predict_",j))))))
-      }
-    }
-    result <- NULL
-    for (i in 1:(A_unique_length-1)){
-      for (j in (i + 1):A_unique_length){
-
-        assign(paste0("ATE_",i,j), list(eval(parse(text =(paste0("ATE_",i,j))))))
-        assign(paste0("ATE_",i,j), stats::setNames(eval(parse(text =(paste0("ATE_",i,j)))), paste0("ATE_",i,j)))
-        result <- c(result, (eval(parse(text =(paste0("ATE_",i,j))))))
-      }
-    }
-    return(result)
+    predict_1 = pnorm(BART::pwbart(cbind(covariates, A = sort(unique(A))[1]), bart_mod$treedraws))
+    predict_2 = pnorm(BART::pwbart(cbind(covariates, A = sort(unique(A))[2]), bart_mod$treedraws))
+    predict_3 = pnorm(BART::pwbart(cbind(covariates, A = sort(unique(A))[3]), bart_mod$treedraws))
+    causal_effect_1 = rowMeans(predict_1 - predict_2)
+    causal_effect_2 = rowMeans(predict_2 - predict_3)
+    causal_effect_3 = rowMeans(predict_1 - predict_3)
+    return(list(ATE_01 = causal_effect_1, ATE_12 = causal_effect_2, ATE_02 = causal_effect_3))
   }
+   #### from here, the function of sensitivity correction will begin.
+
+  # Algorithm 1.1: Fit the multinomial probit BART model to the treatment A
+  A_model = BART::mbart2(x.train = covariates, as.integer(as.factor(A)), x.test = covariates, ndpost = n_p * 10, nskip = 1000)
 
 
+  # Algorithm 1.1: Estimate the generalized propensity scores for each individual
+  p = array(A_model$prob.test[seq(1, nrow(A_model$prob.test), 10),], dim = c(n_p, 3, length(A)))
 
-  #### from here, the function of sensitivity correction will begin.
-
-  # fit the treatment assigment model, to use gap-sampling, we over sample n * sample_gap samples, and select a sample per sample_gap =10 turns
-  assign_mod = BART::mbart2(x.train = covariates, as.integer(as.factor(A)), x.test = covariates, ndpost = n_p * 10, nskip = 1000)
-
-  # assign the estimated assignment probability to each sample, the size is (n, #treatment, sample_size)
-  p = array(assign_mod$prob.test[seq(1, nrow(assign_mod$prob.test), 10),], dim = c(n_p, A_unique_length, length(A)))
-
-  # start to calculate causal effect by n * n times
-  # for (j in 1:(A_unique_length)){
-  #   assign(paste0("causal_effect_",j), matrix(NA, nrow = n_alpha, ncol = n_p * nposterior))
-  # }
+  # Algorithm 1.2: start to calculate causal effect by M1 * M2 times
+  causal_effect_1 = matrix(NA, nrow = n_alpha * n_p, ncol = nposterior)
+  causal_effect_2 = matrix(NA, nrow = n_alpha * n_p, ncol = nposterior)
+  causal_effect_3 = matrix(NA, nrow = n_alpha * n_p, ncol = nposterior)
   step = 1
   train_x = cbind(covariates, A)
-  for (m in 1:(A_unique_length-1)){
-    for (n in (m + 1):A_unique_length){
-      assign(paste0("ATE_",m,n), c())
-    }
-  }
-  for (i in 1:n_alpha) {
-    for (m in 1:(A_unique_length-1)){
-      for (n in (m + 1):A_unique_length){
-        assign(paste0("ate_",m,n), c())
-      }
-    }
-    for (j in 1:n_p) {
+  for (j in 1:n_p) {
+    # Algorithm 1.2: Draw M1 generalzied propensity scores from the posterior predictive distribution of the A model for each individual
+    p_draw_1 <- p[j, 1, ]
+    p_draw_2 <- p[j, 2, ]
+    p_draw_3 <- p[j, 3, ]
+    for (m in 1:n_alpha) {
+      # Algorithm 1.2: Draw M2 values from the prior distribution of each of the sensitivity paramaters alpha for eacg treatment
       print(paste("step :", step, "/", n_alpha*n_p))
       sort(unique(train_x[, "A"]))
-      # correct the binary outcome based on A, alpha, p
+      # Algorithm 1.3: Compute the adjusted outcomes y_corrected for each treatment for each M1M2 draws
+      y_corrected = ifelse(
+        train_x[, "A"] == sort(unique(train_x[, "A"]))[1],
+        y - (unlist(alpha[m, 1]) * p_draw_2  + unlist(alpha[m, 4]) * p_draw_3),
+        ifelse(
+          train_x[, "A"] == sort(unique(train_x[, "A"]))[2],
+          y - (unlist(alpha[m, 2]) * p_draw_1 + unlist(alpha[m, 3]) * p_draw_3),
+          y - (unlist(alpha[m, 5]) * p_draw_1 + unlist(alpha[m, 6]) * p_draw_2)
+        )
+      )
+      # Algorithm 1.4: Fit a BART model to each set of M1*M2 sets of observed data with the adjusted outcomes y_corrected
+      bart_mod = BART::wbart(x.train = cbind(covariates, A),  y.train = y_corrected,  ndpost = nposterior, printevery = 10000)
 
-        train_y = ifelse(train_x[, "A"] == sort(unique(train_x[, "A"]))[1], y - (unlist(alpha[i, 1]) * p[j, 2, ] + unlist(alpha[i, 4]) * p[j, 3, ]),
-                         ifelse(train_x[, "A"] == sort(unique(train_x[, "A"]))[2], y - (unlist(alpha[i, 2]) * p[j, 1, ] + unlist(alpha[i, 3]) * p[j, 3, ]),
-                                y - (unlist(alpha[i, 5]) * p[j, 1, ] + unlist(alpha[i, 6]) * p[j, 2, ]))) # A = 3
-
-      # fit the bart model to estimate causal effect
-      bart_mod = BART::wbart(x.train = cbind(covariates, A),  y.train = train_y,  ndpost = nposterior, printevery = 10000)
-
-      for (z in 1:(A_unique_length)){
-        assign(paste0("predict_",z), pnorm(BART::pwbart(cbind(covariates, A = z), bart_mod$treedraws)))
-      }
-
-      for (m in 1:(A_unique_length-1)){
-        for (n in (m + 1):A_unique_length){
-          assign(paste0("ate_",m,n), c(eval(parse(text =(paste0("ate_",m,n)))), rowMeans(eval(parse(text =(paste0("predict_",m)))) - eval(parse(text =(paste0("predict_",n)))))))
-        }
-      }
-
+      predict_1 = BART::pwbart(cbind(covariates, A = sort(unique(A))[1]), bart_mod$treedraws)
+      predict_2 = BART::pwbart(cbind(covariates, A = sort(unique(A))[2]), bart_mod$treedraws)
+      predict_3 = BART::pwbart(cbind(covariates, A = sort(unique(A))[3]), bart_mod$treedraws)
+      causal_effect_1[((m - 1) * n_p) + j, ] = rowMeans(predict_1 - predict_2)
+      causal_effect_2[((m - 1) * n_p) + j, ] = rowMeans(predict_2 - predict_3)
+      causal_effect_3[((m - 1) * n_p) + j, ] = rowMeans(predict_1 - predict_3)
       step = step + 1
     }
-    for (m in 1:(A_unique_length-1)){
-      for (n in (m + 1):A_unique_length){
-        assign(paste0("ATE_",m,n), rbind(eval(parse(text =(paste0("ATE_",m,n)))),
-                                         eval(parse(text =(paste0("ate_",m,n))))))
-      }
-    }
-  }
-  # return the result
-  result <- NULL
-  for (i in 1:(A_unique_length-1)){
-    for (j in (i + 1):A_unique_length){
 
-      assign(paste0("ATE_",i,j), list(eval(parse(text =(paste0("ATE_",i,j))))))
-      assign(paste0("ATE_",i,j), stats::setNames(eval(parse(text =(paste0("ATE_",i,j)))), paste0("ATE_",i,j)))
-      result <- c(result, (eval(parse(text =(paste0("ATE_",i,j))))))
-    }
   }
-  return(result)
+  # Final combined adjusted causal effect
+  list(ATE_01 = causal_effect_1, ATE_12 = causal_effect_2, ATE_02 = causal_effect_3)
 }

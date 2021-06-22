@@ -55,11 +55,11 @@ p.A2 <- exp(lp.B)/(exp(lp.A)+exp(lp.B)+exp(lp.C))
 p.A3 <- exp(lp.C)/(exp(lp.A)+exp(lp.B)+exp(lp.C))
 p.A <- matrix(c(p.A1,p.A2,p.A3),ncol = 3)
 A = NULL
-for (i in 1:sample_size) { # assign treatment
- A[i] <- sample(c(1, 2, 3),
+for (m in 1:sample_size) { # assign treatment
+ A[m] <- sample(c(1, 2, 3),
                 size = 1,
                 replace = TRUE,
-                prob = p.A[i, ])
+                prob = p.A[m, ])
 }
 table(A)
 # set the binary outcome
@@ -85,7 +85,7 @@ n_p <- 1
 sample_gap <- 10
 sensitivity_analysis_result <- sensitivity_analysis(cbind(x1, x2), Yobs,
 A, alpha, n_p = 1, sensitivity_correction = TRUE)
-mean(sensitivity_analysis_result$ATE_23)
-mean(sensitivity_analysis_result$ATE_13)
-mean(sensitivity_analysis_result$ATE_12)}
+mean(sensitivity_analysis_result$ATE_12)
+mean(sensitivity_analysis_result$ATE_02)
+mean(sensitivity_analysis_result$ATE_01)}
 }
